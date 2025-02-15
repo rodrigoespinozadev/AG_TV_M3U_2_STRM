@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import sys
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from time import sleep, time
 
 import requests as requests
@@ -87,8 +87,6 @@ class MediaSyncManager:
         )
 
         self._is_ready = self._username is not None and self._password is not None
-        self._semaphore_io = threading.Semaphore(value=MAX_THREADS_IO)
-        self._semaphore_no_io = threading.Semaphore(value=MAX_THREADS_NO_IO)
         self._tmdb_data = {}
         self._streams_data = {}
         self._agtv_data = {}
@@ -144,15 +142,10 @@ class MediaSyncManager:
         start_time = time()
         _LOGGER.info("Loading Apollo Group TV lists")
 
-        threads = []
-
-        for endpoint in self._endpoints:
-            thread = threading.Thread(target=self._load_endpoint_data, args=[endpoint])
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
+        with ThreadPoolExecutor(max_workers=MAX_THREADS_IO) as executor:
+            futures = [executor.submit(self._load_endpoint_data, endpoint) for endpoint in self._endpoints]
+            for future in futures:
+                future.result()
 
         self._save_agtv_file()
 
@@ -163,7 +156,6 @@ class MediaSyncManager:
         )
 
     def _load_endpoint_data(self, endpoint):
-        self._semaphore_io.acquire()
 
         try:
             _LOGGER.debug(f"Load endpoint data, Endpoint: {endpoint}")
@@ -187,22 +179,14 @@ class MediaSyncManager:
                 f"Failed to load endpoint data, Endpoint: {endpoint}, Error: {ex}, Line: {exc_tb.tb_lineno}"
             )
 
-        self._semaphore_io.release()
-
     def _extract_streams(self):
         start_time = time()
         _LOGGER.info("Extract streams from Apollo Group TV lists")
 
-        threads = []
-        for name in self._agtv_data:
-            thread = threading.Thread(
-                target=self._extract_streams_from_list, args=[name]
-            )
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
+        with ThreadPoolExecutor(max_workers=MAX_THREADS_NO_IO) as executor:
+            futures = [executor.submit(self._extract_streams_from_list, name) for name in self._agtv_data]
+            for future in futures:
+                future.result()
 
         self._save_file(STREAMS_FILE, json.dumps(self._streams_data, indent=4))
 
@@ -213,7 +197,6 @@ class MediaSyncManager:
         )
 
     def _extract_streams_from_list(self, name):
-        self._semaphore_no_io.acquire()
 
         try:
             lines = self._agtv_data[name]
@@ -239,8 +222,6 @@ class MediaSyncManager:
             _LOGGER.error(
                 f"Failed to add stream, Error: {ex}, Line: {exc_tb.tb_lineno}"
             )
-
-        self._semaphore_no_io.release()
 
     def _add_stream_info(self, stream_info, media_url):
         stream_data = self._get_stream_info(stream_info)
@@ -290,20 +271,16 @@ class MediaSyncManager:
         start_time = time()
         _LOGGER.info("Load TMDB data")
 
-        threads = []
         tmdb_data_items = [
             tmdb_id
             for tmdb_id in self._tmdb_data
             if tmdb_id not in self._tmdb_data or self._tmdb_data.get(tmdb_id) is None
         ]
 
-        for imdb_id in tmdb_data_items:
-            thread = threading.Thread(target=self._load_tmdb_media_data, args=[imdb_id])
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
+        with ThreadPoolExecutor(max_workers=MAX_THREADS_IO) as executor:
+            futures = [executor.submit(self._load_tmdb_media_data, imdb_id) for imdb_id in tmdb_data_items]
+            for future in futures:
+                future.result()
 
         self._save_file(TMDB_FILE, json.dumps(self._tmdb_data, indent=4))
 
@@ -314,7 +291,6 @@ class MediaSyncManager:
         )
 
     def _load_tmdb_media_data(self, imdb_id):
-        self._semaphore_io.acquire()
 
         try:
             _LOGGER.debug(f"Loading TMDB data for {imdb_id}")
@@ -342,28 +318,20 @@ class MediaSyncManager:
                 f"Failed to enrich media data, IMDB ID: {imdb_id}, Error: {ex}, Line: {exc_tb.tb_lineno}"
             )
 
-        self._semaphore_io.release()
-
     def _merge_tmdb_into_streams(self):
         start_time = time()
         _LOGGER.info("Merging TMDB data into streams")
 
-        threads = []
         relevant_streams = [
             stream_id
             for stream_id in self._streams_data
             if self._can_merge_tmdb_into_stream(stream_id)
         ]
 
-        for stream_id in relevant_streams:
-            thread = threading.Thread(
-                target=self._merge_tmdb_into_stream, args=[stream_id]
-            )
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
+        with ThreadPoolExecutor(max_workers=MAX_THREADS_NO_IO) as executor:
+            futures = [executor.submit(self._merge_tmdb_into_stream, stream_id) for stream_id in relevant_streams]
+            for future in futures:
+                future.result()
 
         self._save_file(STREAMS_FILE, json.dumps(self._streams_data, indent=4))
 
@@ -387,7 +355,6 @@ class MediaSyncManager:
         return can_merge
 
     def _merge_tmdb_into_stream(self, stream_id):
-        self._semaphore_no_io.acquire()
 
         try:
             stream_info = self._streams_data[stream_id]
@@ -465,8 +432,6 @@ class MediaSyncManager:
                 f"Failed to merge TMDB into stream, ID: {stream_id}, Error: {ex}, Line: {exc_tb.tb_lineno}"
             )
 
-        self._semaphore_no_io.release()
-
     def _prepare_directories(self):
         start_time = time()
         _LOGGER.info("Preparing directories")
@@ -513,20 +478,16 @@ class MediaSyncManager:
         start_time = time()
         _LOGGER.info("Finalizing stream files")
 
-        threads = []
         relevant_streams = [
             stream_id
             for stream_id in self._streams_data
             if self._is_ready_stream(stream_id)
         ]
 
-        for stream_id in relevant_streams:
-            thread = threading.Thread(target=self._update_stream_file, args=[stream_id])
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
+        with ThreadPoolExecutor(max_workers=MAX_THREADS_NO_IO) as executor:
+            futures = [executor.submit(self._update_stream_file, stream_id) for stream_id in relevant_streams]
+            for future in futures:
+                future.result()
 
         self._save_file(STREAMS_FILE, json.dumps(self._streams_data, indent=4))
 
@@ -537,7 +498,6 @@ class MediaSyncManager:
         )
 
     def _update_stream_file(self, stream_id):
-        self._semaphore_no_io.acquire()
 
         try:
             stream_info = self._streams_data[stream_id]
@@ -585,8 +545,6 @@ class MediaSyncManager:
             _LOGGER.error(
                 f"Failed to update stream file, ID: {stream_id}, Error: {ex}, Line: {exc_tb.tb_lineno}"
             )
-
-        self._semaphore_no_io.release()
 
     def _fault_report(self):
         for reported_stream_id in self._reported_as_fault:
