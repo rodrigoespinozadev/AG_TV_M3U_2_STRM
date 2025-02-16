@@ -197,7 +197,6 @@ class MediaSyncManager:
         )
 
     def _extract_streams_from_list(self, name):
-
         try:
             lines = self._agtv_data[name]
 
@@ -210,7 +209,6 @@ class MediaSyncManager:
 
                     if self._verify_url(url):
                         self._add_stream_info(stream_info, url)
-
                     else:
                         _LOGGER.warning(
                             f"Invalid media URL for stream: {stream_info}, URL: {url}"
@@ -218,7 +216,6 @@ class MediaSyncManager:
 
         except Exception as ex:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-
             _LOGGER.error(
                 f"Failed to add stream, Error: {ex}, Line: {exc_tb.tb_lineno}"
             )
@@ -291,32 +288,47 @@ class MediaSyncManager:
         )
 
     def _load_tmdb_media_data(self, imdb_id):
+        max_retries = 5
+        retry_delay = 1
 
-        try:
-            _LOGGER.debug(f"Loading TMDB data for {imdb_id}")
+        for attempt in range(max_retries):
+            try:
+                _LOGGER.debug(f"Loading TMDB data for {imdb_id}")
 
-            url = f"https://api.themoviedb.org/3/find/{imdb_id}?external_source=imdb_id"
+                url = f"https://api.themoviedb.org/3/find/{imdb_id}?external_source=imdb_id"
+                _LOGGER.debug(f"Loading TMDB url {url}")
 
-            response = requests.get(url, headers=self._headers)
-            data = response.json()
+                response = requests.get(url, headers=self._headers)
+                data = response.json()
 
-            if data.get("success", True):
-                for media_type in TMDB_MEDIA_TYPES:
-                    data_objects = data.get(f"{media_type}_results")
+                if data.get("success", True):
+                    for media_type in TMDB_MEDIA_TYPES:
+                        data_objects = data.get(f"{media_type}_results")
 
-                    if data_objects is not None and len(data_objects) > 0:
-                        data_object = data_objects[0]
+                        if data_objects is not None and len(data_objects) > 0:
+                            data_object = data_objects[0]
+                            self._tmdb_data[imdb_id] = data_object
+                            _LOGGER.debug(f"Loaded TMDB data for {imdb_id}, Data: {data_object}")
+                        else:
+                            _LOGGER.debug(f"No data found for {imdb_id} in {media_type}_results")
+                    return  # exit the function if successful
+                else:
+                    _LOGGER.error(f"Failed to load TMDB data for {imdb_id}, Response: {data}")
+                    if data.get("status_code") == 25:  # Too many requests
+                        _LOGGER.warning(f"Rate limit exceeded. Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # exponential backoff
+                    else:
+                        break  # exit the loop for other errors
 
-                        self._tmdb_data[imdb_id] = data_object
+            except Exception as ex:
+                exc_tb = sys.exc_info()
+                _LOGGER.error(
+                    f"Failed to enrich media data, IMDB ID: {imdb_id}, Error: {ex}, Line: {exc_tb.tb_lineno}"
+                )
+                break  # exit the loop on exception
 
-            _LOGGER.debug(f"Loaded TMDB data for {imdb_id}, Data: {data}")
-
-        except Exception as ex:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-
-            _LOGGER.error(
-                f"Failed to enrich media data, IMDB ID: {imdb_id}, Error: {ex}, Line: {exc_tb.tb_lineno}"
-            )
+        _LOGGER.error(f"Exceeded maximum retries for {imdb_id}")
 
     def _merge_tmdb_into_streams(self):
         start_time = time()
